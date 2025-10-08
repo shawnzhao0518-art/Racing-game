@@ -2,18 +2,23 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Web Racing Game</title>
+  <title>LapRun | Real F1 Tracks 3D Racing</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="stylesheet" href="style.css" />
+
+  <!-- ✅ 正确加载 Three.js 与控制器（无需 import） -->
   <script src="https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.161.0/examples/js/controls/OrbitControls.js"></script>
 </head>
+
 <body>
+  <!-- 控制面板 -->
   <div id="ui">
     <select id="trackSelect">
-      <option value="silverstone">Silverstone</option>
-      <option value="jeddah">Jeddah</option>
-      <option value="shanghai">Shanghai</option>
-      <option value="las_vegas">Las Vegas</option>
+      <option value="silverstone">🇬🇧 Silverstone</option>
+      <option value="jeddah">🇸🇦 Jeddah</option>
+      <option value="shanghai">🇨🇳 Shanghai</option>
+      <option value="las_vegas">🇺🇸 Las Vegas</option>
     </select>
     <button id="pauseBtn">⏸ Pause</button>
     <button id="resetBtn">🏁 Reset</button>
@@ -21,7 +26,11 @@
     <div id="timeDisplay">Time: 0.00s</div>
     <div id="bestDisplay">Best: 0.00s</div>
   </div>
+
+  <!-- 画布区域 -->
   <canvas id="game"></canvas>
+
+  <!-- ✅ 脚本最后加载，确保 three.js 已加载完成 -->
   <script src="script.js"></script>
 </body>
 </html>

@@ -1,18 +1,16 @@
-// ---- 全局变量 和 初始化 ----
+// ---- 初始化基础环境 ----
 const canvas = document.getElementById('game');
-const renderer = new THREE.WebGLRenderer({ canvas });
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xa0a0a0);
 
-const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 1000);
-camera.position.set(0, 10, 20);
-
-const light = new THREE.DirectionalLight(0xffffff, 1);
-light.position.set(10, 20, 10);
-scene.add(light);
-scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+// 摄像机
+const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 2000);
+camera.position.set(0, 80, 120);
+camera.lookAt(0, 0, 0);
 
 window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -20,213 +18,168 @@ window.addEventListener('resize', () => {
   camera.updateProjectionMatrix();
 });
 
-// 控制器（用于调试视角）
-// const controls = new THREE.OrbitControls(camera, renderer.domElement);
+// 光照与环境
+const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
+hemiLight.position.set(0, 200, 0);
+scene.add(hemiLight);
 
-// ---- 赛车模型（低模） ----
-const carGeo = new THREE.BoxGeometry(1, 0.5, 2);
-const carMat = new THREE.MeshLambertMaterial({ color: 0xff3333 });
+const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+dirLight.position.set(50, 200, 100);
+dirLight.castShadow = true;
+scene.add(dirLight);
+
+// 地面与网格
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(1000, 1000),
+  new THREE.MeshLambertMaterial({ color: 0xcccccc })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+const grid = new THREE.GridHelper(1000, 100, 0x000000, 0x000000);
+grid.material.opacity = 0.2;
+grid.material.transparent = true;
+scene.add(grid);
+
+// ---- 赛车（低模风格） ----
+const carGeo = new THREE.BoxGeometry(2, 1, 4);
+const carMat = new THREE.MeshStandardMaterial({ color: 0xff3333 });
 const carMesh = new THREE.Mesh(carGeo, carMat);
+carMesh.castShadow = true;
+carMesh.position.set(0, 1, 0);
 scene.add(carMesh);
 
-let carPosition = new THREE.Vector3();
-let carDirection = new THREE.Vector3(0, 0, -1);
+let carPos = new THREE.Vector3(0, 1, 0);
+let carDir = new THREE.Vector3(0, 0, -1);
 let carSpeed = 0;
 
-// ---- 轨道 & 赛道数据管理 ----
-let tracks = {};  // 存放赛道 JSON 数据
-let currentTrackName = 'silverstone';
+// ---- 加载赛道 ----
 let trackCurve = null;
 let trackMesh = null;
-let trackPoints = [];  // Vector3 数组（中心线）
-let trackLength = 0;
+let currentTrack = 'silverstone';
+let trackCenter = new THREE.Vector3();
 
-// 加载赛道 JSON
 async function loadTrack(name) {
-  const resp = await fetch(`tracks/${name}.json`);
-  const j = await resp.json();
-  // j.points 是 [[x, y, z], ...]
-  trackPoints = j.points.map(p => new THREE.Vector3(p[0], p[1], p[2]));
-  buildTrackGeometry();
+  console.log(`正在加载赛道：${name}...`);
+  try {
+    const resp = await fetch(`tracks/${name}.json`);
+    if (!resp.ok) throw new Error("赛道文件不存在");
+    const data = await resp.json();
+
+    const pts = data.points.map(p => new THREE.Vector3(p[0], p[1], p[2]));
+    buildTrack(pts);
+    trackCenter = getTrackCenter(pts);
+    camera.lookAt(trackCenter);
+    alert(`✅ 赛道 ${name} 加载成功！`);
+  } catch (err) {
+    alert(`❌ 加载赛道失败：${err.message}`);
+  }
 }
 
-// 用中心线生成平滑曲线 & 赛道几何
-function buildTrackGeometry() {
-  if (trackMesh) {
-    scene.remove(trackMesh);
-    trackMesh.geometry.dispose();
-    trackMesh.material.dispose();
-  }
-  trackCurve = new THREE.CatmullRomCurve3(trackPoints, true, 'catmullrom', 0.5);
+function buildTrack(points) {
+  if (trackMesh) scene.remove(trackMesh);
+
+  trackCurve = new THREE.CatmullRomCurve3(points, true, 'catmullrom', 0.5);
   const divisions = 2000;
-  const pts = trackCurve.getPoints(divisions);
+  const curvePts = trackCurve.getPoints(divisions);
 
-  // 生成路径（中线）
-  const lineGeo = new THREE.BufferGeometry().setFromPoints(pts);
-  const lineMat = new THREE.LineBasicMaterial({ color: 0x00ff00 });
-  const line = new THREE.Line(lineGeo, lineMat);
-  scene.add(line);
-
-  // 生成赛道实体：沿线拉伸一个矩形截面
-  const width = 4;  // 赛道宽度
-  const geometry = new THREE.BufferGeometry();
-  const vertices = [];
+  const width = 6;
+  const verts = [];
   const indices = [];
 
-  for (let i = 0; i < pts.length; i++) {
-    const p = pts[i];
+  for (let i = 0; i < curvePts.length; i++) {
+    const p = curvePts[i];
     const t = trackCurve.getTangent(i / divisions).normalize();
-    // 计算法向量（向左偏移）
     const up = new THREE.Vector3(0, 1, 0);
     const left = new THREE.Vector3().crossVectors(up, t).normalize();
     const half = width / 2;
     const v1 = p.clone().add(left.clone().multiplyScalar(half));
     const v2 = p.clone().add(left.clone().multiplyScalar(-half));
-    vertices.push(v1.x, v1.y, v1.z);
-    vertices.push(v2.x, v2.y, v2.z);
+    verts.push(v1.x, v1.y, v1.z);
+    verts.push(v2.x, v2.y, v2.z);
   }
 
-  for (let i = 0; i < pts.length - 1; i++) {
+  for (let i = 0; i < curvePts.length - 1; i++) {
     const i2 = i * 2;
-    // 两三角形构成矩形片
     indices.push(i2, i2 + 1, i2 + 2);
     indices.push(i2 + 1, i2 + 3, i2 + 2);
   }
 
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
-  geometry.setIndex(indices);
-  geometry.computeVertexNormals();
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
 
-  trackMesh = new THREE.Mesh(geometry, new THREE.MeshLambertMaterial({ color: 0x999999 }));
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0x333333,
+    roughness: 0.8,
+    metalness: 0.1
+  });
+
+  trackMesh = new THREE.Mesh(geo, mat);
+  trackMesh.receiveShadow = true;
   scene.add(trackMesh);
-
-  // 计算赛道近似长度
-  trackLength = 0;
-  for (let i = 1; i < pts.length; i++) {
-    trackLength += pts[i].distanceTo(pts[i-1]);
-  }
 }
 
-// 切换赛道
-document.getElementById('trackSelect').addEventListener('change', e => {
-  currentTrackName = e.target.value;
-  resetCar();
-  loadTrack(currentTrackName);
-  loadBestForCurrent();
-});
+function getTrackCenter(points) {
+  const box = new THREE.Box3().setFromPoints(points);
+  const center = new THREE.Vector3();
+  box.getCenter(center);
+  return center;
+}
 
-// ---- 控制 & 输入 ----
+// ---- 控制 ----
 const keys = {};
-document.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
-document.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+document.addEventListener('keydown', e => (keys[e.key.toLowerCase()] = true));
+document.addEventListener('keyup', e => (keys[e.key.toLowerCase()] = false));
 
 function updateCar(dt) {
-  const accel = 5;
-  const turnSpeed = 2.0;
-  if (keys['w'] || keys['arrowup']) {
-    carSpeed += accel * dt;
-  } else if (keys['s'] || keys['arrowdown']) {
-    carSpeed -= accel * dt;
-  } else {
-    // 摩擦
-    carSpeed *= 0.98;
-  }
-  const maxSpeed = 20;
-  carSpeed = THREE.MathUtils.clamp(carSpeed, -maxSpeed, maxSpeed);
+  const accel = 20;
+  const turn = 1.5;
+  if (keys['w'] || keys['arrowup']) carSpeed += accel * dt;
+  else if (keys['s'] || keys['arrowdown']) carSpeed -= accel * dt;
+  else carSpeed *= 0.98;
 
-  // 转向基于速度
-  if (keys['a'] || keys['arrowleft']) {
-    const angle = turnSpeed * dt * (carSpeed / maxSpeed);
-    carDirection.applyAxisAngle(new THREE.Vector3(0,1,0), angle);
-  } else if (keys['d'] || keys['arrowright']) {
-    const angle = -turnSpeed * dt * (carSpeed / maxSpeed);
-    carDirection.applyAxisAngle(new THREE.Vector3(0,1,0), angle);
-  }
+  carSpeed = THREE.MathUtils.clamp(carSpeed, -30, 30);
+  if (keys['a'] || keys['arrowleft'])
+    carDir.applyAxisAngle(new THREE.Vector3(0, 1, 0), turn * dt * (carSpeed / 20));
+  if (keys['d'] || keys['arrowright'])
+    carDir.applyAxisAngle(new THREE.Vector3(0, 1, 0), -turn * dt * (carSpeed / 20));
 
-  // 更新位置
-  const moveDelta = carDirection.clone().multiplyScalar(carSpeed * dt);
-  carPosition.add(moveDelta);
-  carMesh.position.copy(carPosition);
+  const deltaMove = carDir.clone().multiplyScalar(carSpeed * dt);
+  carPos.add(deltaMove);
+  carMesh.position.copy(carPos);
 
-  // 朝向更新
-  const forward = carDirection.clone();
-  const targetQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,-1), forward.clone().normalize());
-  carMesh.quaternion.slerp(targetQuat, 0.1);
+  const targetQuat = new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 0, -1),
+    carDir.clone().normalize()
+  );
+  carMesh.quaternion.slerp(targetQuat, 0.2);
 }
 
-// ---- 计时 / 最佳记录 / 复位 / 暂停 等 UI ----
-let paused = false;
-let startTime = null;
-let bestTimes = {};  // 存每条赛道的最佳时间
-let finished = false;
-
-function loadBestForCurrent() {
-  const key = `best_${currentTrackName}`;
-  const v = parseFloat(localStorage.getItem(key));
-  bestTimes[currentTrackName] = isNaN(v) ? null : v;
-  updateUI();
+// ---- 摄像机跟随 ----
+function updateCamera() {
+  const follow = carPos.clone().add(new THREE.Vector3(-carDir.x * 15, 8, -carDir.z * 15));
+  camera.position.lerp(follow, 0.05);
+  camera.lookAt(carPos);
 }
 
-function saveBestForCurrent(t) {
-  const key = `best_${currentTrackName}`;
-  localStorage.setItem(key, t.toString());
-  bestTimes[currentTrackName] = t;
-}
-
-function updateUI() {
-  const td = document.getElementById('timeDisplay');
-  const bd = document.getElementById('bestDisplay');
-  if (startTime != null && !finished) {
-    const elapsed = (performance.now() - startTime)/1000;
-    td.textContent = `Time: ${elapsed.toFixed(2)}s`;
-  }
-  const best = bestTimes[currentTrackName];
-  bd.textContent = `Best: ${best != null ? best.toFixed(2) : "—"}s`;
-}
-
-document.getElementById('pauseBtn').onclick = () => {
-  paused = !paused;
-  if (!paused && startTime === null) {
-    startTime = performance.now();
-  }
-};
-document.getElementById('refreshBtn').onclick = () => {
-  // 重新加载页面（重开当前赛道）
-  window.location.reload();
-};
-document.getElementById('resetBtn').onclick = () => {
-  // 简单版本：返回起点
+// ---- UI ----
+document.getElementById('trackSelect').onchange = e => {
+  currentTrack = e.target.value;
+  loadTrack(currentTrack);
   resetCar();
-  startTime = performance.now();
-  finished = false;
 };
+document.getElementById('resetBtn').onclick = () => resetCar();
+document.getElementById('refreshBtn').onclick = () => location.reload();
 
-// 重置赛车到起点
 function resetCar() {
-  if (trackPoints && trackPoints.length > 0) {
-    carPosition.copy(trackPoints[0]);
-  } else {
-    carPosition.set(0, 0, 0);
-  }
-  carDirection.set(0, 0, -1);
+  carPos.set(trackCenter.x, 1, trackCenter.z);
+  carDir.set(0, 0, -1);
   carSpeed = 0;
-  carMesh.position.copy(carPosition);
-}
-
-// 检测到达终点
-function checkFinish() {
-  const pts = trackCurve.getPoints(2000);
-  const last = pts[pts.length - 1];
-  const d = carPosition.distanceTo(last);
-  if (d < 2.0 && !finished) {
-    finished = true;
-    const t = (performance.now() - startTime)/1000;
-    const best = bestTimes[currentTrackName];
-    if (best === null || t < best) {
-      saveBestForCurrent(t);
-    }
-    alert(`Finished! Time: ${t.toFixed(2)}s`);
-  }
+  carMesh.position.copy(carPos);
+  console.log('赛车已重置');
 }
 
 // ---- 主循环 ----
@@ -236,22 +189,13 @@ function animate() {
   const dt = (now - last) / 1000;
   last = now;
 
-  if (!paused && trackCurve) {
-    if (startTime === null) {
-      startTime = now;
-    }
-    updateCar(dt);
-    checkFinish();
-  }
-
-  camera.position.lerp(new THREE.Vector3(carPosition.x, carPosition.y + 8, carPosition.z + 15), 0.05);
-  camera.lookAt(carPosition);
-
+  updateCar(dt);
+  updateCamera();
   renderer.render(scene, camera);
+
   requestAnimationFrame(animate);
 }
 
 // ---- 启动 ----
-loadTrack(currentTrackName);
-resetCar();
+loadTrack(currentTrack);
 animate();

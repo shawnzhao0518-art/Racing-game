@@ -252,7 +252,6 @@ function animate() {
 }
 
 // ---- 启动 ----
-loadBestForCurrent();
 loadTrack(currentTrackName);
 resetCar();
 animate();
